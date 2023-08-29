@@ -29,8 +29,10 @@ class CrystalGraph:
         composition: str | None = None,
     ) -> None:
         """Initialize the crystal graph.
-        Attention! This data class is not intended to be created manually.
-                   Crystal Graph should be returned by a CrystalGraphConverter
+
+        Attention! This data class is not intended to be created manually. CrystalGraph should
+        be returned by a CrystalGraphConverter
+
         Args:
             atomic_number (Tensor): the atomic numbers of atoms in the structure
                 [n_atom]
@@ -38,26 +40,34 @@ class CrystalGraph:
                 [n_atom, 3]
             atom_graph (Tensor): a directed graph adjacency list,
                 (center atom indices, neighbor atom indices, undirected bond index)
-                for bonds in bond_fea [2*n_bond, 3]
+                for bonds in bond_fea
+                [num_directed_bonds, 2]
             atom_graph_cutoff (float): the cutoff radius to draw edges in atom_graph
             neighbor_image (Tensor): the periodic image specifying the location of
-                neighboring atom [2*n_bond, 2]
+                neighboring atom
+                see: https://github.com/materialsproject/pymatgen/blob/ca2175c762e37ea7
+                c9f3950ef249bc540e683da1/pymatgen/core/structure.py#L1485-L1541
+                [num_directed_bonds, 3]
             directed2undirected (Tensor): the mapping from directed edge index to
-                undirected edge index for the atom graph [2*n_bond]
+                undirected edge index for the atom graph
+                [num_directed_bonds]
             undirected2directed (Tensor): the mapping from undirected edge index to
                 one of its directed edge index, this is essentially the inverse
                 mapping of the directed2undirected this tensor is needed for
-                computation efficiency. [n_bond]
+                computation efficiency.
+                Note that num_directed_bonds = 2 * num_undirected_bonds
+                [num_undirected_bonds]
             bond_graph (Tensor): a directed graph adjacency list,
                 (atom indices, 1st undirected bond idx, 1st directed bond idx,
-                 2nd undirected bond idx, 2nd directed bond idx)
-                for angles in angle_fea [n_angle, 5]
+                2nd undirected bond idx, 2nd directed bond idx) for angles in angle_fea
+                [n_angle, 5]
             bond_graph_cutoff (float): the cutoff bond length to include bond
                 as nodes in bond_graph
-            lattice (Tensor): lattices of the input structure [3, 3]
-            graph_id (str or None): an id to keep track of this crystal graph
+            lattice (Tensor): lattices of the input structure
+                [3, 3]
+            graph_id (str | None): an id to keep track of this crystal graph
                 Default = None
-            mp_id (str) or None: Materials Project id of this structure
+            mp_id (str | None): Materials Project id of this structure
                 Default = None
             composition: Chemical composition of the compound, used just for
                 better tracking of the graph
@@ -158,12 +168,15 @@ class CrystalGraph:
         return CrystalGraph(**dic)
 
     def __repr__(self) -> str:
-        """Details of the graph."""
+        """String representation of the graph."""
+        composition = self.composition
+        atom_graph_cutoff = self.atom_graph_cutoff
+        bond_graph_cutoff = self.bond_graph_cutoff
+        atom_graph_len = self.atom_graph
+        n_atoms = len(self.atomic_number)
+        atom_graph_len = len(self.atom_graph)
+        bond_graph_len = len(self.bond_graph)
         return (
-            f"Crystal Graph {self.composition} \n"
-            f"constructed using atom_graph_cutoff={self.atom_graph_cutoff}, "
-            f"bond_graph_cutoff={self.bond_graph_cutoff} \n"
-            f"(n_atoms={len(self.atomic_number)}, "
-            f"atom_graph={len(self.atom_graph)}, "
-            f"bond_graph={len(self.bond_graph)})"
+            f"CrystalGraph({composition=}, {atom_graph_cutoff=}, {bond_graph_cutoff=}, "
+            f"{n_atoms=}, {atom_graph_len=}, {bond_graph_len=})"
         )

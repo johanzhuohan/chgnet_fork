@@ -31,9 +31,9 @@ class StructureData(Dataset):
         structures: list[Structure],
         energies: list[float],
         forces: list[Sequence[Sequence[float]]],
-        stresses: list[Sequence[Sequence[float]]] | None | None = None,
-        magmoms: list[Sequence[Sequence[float]]] | None | None = None,
-        graph_converter: CrystalGraphConverter | None | None = None,
+        stresses: list[Sequence[Sequence[float]]] | None = None,
+        magmoms: list[Sequence[Sequence[float]]] | None = None,
+        graph_converter: CrystalGraphConverter | None = None,
     ) -> None:
         """Initialize the dataset.
 
@@ -235,7 +235,7 @@ class GraphData(Dataset):
         graph_path: str,
         labels: str | dict = "labels.json",
         targets: TrainTask = "efsm",
-        exclude: str | list | None | None = None,
+        exclude: str | list | None = None,
         energy_key: str = "energy_per_atom",
         force_key: str = "force",
         stress_key: str = "stress",
@@ -276,9 +276,9 @@ class GraphData(Dataset):
             self.excluded_graph = []
 
         self.keys = []
-        for mp_id, dic in self.labels.items():
-            for graph_id in dic:
-                self.keys.append((mp_id, graph_id))
+        self.keys = [
+            (mp_id, graph_id) for mp_id, dic in self.labels.items() for graph_id in dic
+        ]
         random.shuffle(self.keys)
         print(f"{len(self.labels)} mp_ids, {len(self)} frames imported")
         if self.excluded_graph is not None:
@@ -348,9 +348,9 @@ class GraphData(Dataset):
         self,
         train_ratio: float = 0.8,
         val_ratio: float = 0.1,
-        train_key: list[str] | None | None = None,
-        val_key: list[str] | None | None = None,
-        test_key: list[str] | None | None = None,
+        train_key: list[str] | None = None,
+        val_key: list[str] | None = None,
+        test_key: list[str] | None = None,
         batch_size=32,
         num_workers=0,
         pin_memory=True,
@@ -389,16 +389,14 @@ class GraphData(Dataset):
             val_key = mp_ids[n_train : n_train + n_val]
             test_key = mp_ids[n_train + n_val :]
         for mp_id in train_key:
-            try:
+            if mp_id in self.labels:
                 train_labels[mp_id] = self.labels.pop(mp_id)
-            except KeyError:
-                continue
         train_dataset = GraphData(
             graph_path=self.graph_path,
             labels=train_labels,
             targets=self.targets,
             exclude=self.excluded_graph,
-            energy_str=self.energy_str,
+            energy_key=self.energy_key,
         )
         train_loader = DataLoader(
             train_dataset,
@@ -411,16 +409,14 @@ class GraphData(Dataset):
 
         # Val
         for mp_id in val_key:
-            try:
+            if mp_id in self.labels:
                 val_labels[mp_id] = self.labels.pop(mp_id)
-            except KeyError:
-                continue
         val_dataset = GraphData(
             graph_path=self.graph_path,
             labels=val_labels,
             targets=self.targets,
             exclude=self.excluded_graph,
-            energy_str=self.energy_str,
+            energy_key=self.energy_key,
         )
         val_loader = DataLoader(
             val_dataset,
@@ -434,16 +430,14 @@ class GraphData(Dataset):
         # Test
         if test_key is not None:
             for mp_id in test_key:
-                try:
+                if mp_id in self.labels:
                     test_labels[mp_id] = self.labels.pop(mp_id)
-                except KeyError:
-                    continue
             test_dataset = GraphData(
                 graph_path=self.graph_path,
                 labels=test_labels,
                 targets=self.targets,
                 exclude=self.excluded_graph,
-                energy_str=self.energy_str,
+                energy_key=self.energy_key,
             )
             test_loader = DataLoader(
                 test_dataset,
@@ -502,12 +496,12 @@ class StructureJsonData(Dataset):
         elif isinstance(data, dict):
             self.data = data
         else:
-            raise Exception("please provide a json path or dictionary")
+            raise ValueError(f"data must be JSON path or dictionary, got {type(data)}")
 
         self.keys = []
-        for mp_id, dic in self.data.items():
-            for graph_id in dic:
-                self.keys.append((mp_id, graph_id))
+        self.keys = [
+            (mp_id, graph_id) for mp_id, dic in self.data.items() for graph_id in dic
+        ]
         random.shuffle(self.keys)
         print(f"{len(self.data)} mp_ids, {len(self)} structures imported")
         self.graph_converter = graph_converter
@@ -621,7 +615,7 @@ class StructureJsonData(Dataset):
             data=train_data,
             graph_converter=self.graph_converter,
             targets=self.targets,
-            energy_str=self.energy_str,
+            energy_key=self.energy_key,
         )
         train_loader = DataLoader(
             train_dataset,
@@ -637,7 +631,7 @@ class StructureJsonData(Dataset):
             data=val_data,
             graph_converter=self.graph_converter,
             targets=self.targets,
-            energy_str=self.energy_str,
+            energy_key=self.energy_key,
         )
         val_loader = DataLoader(
             val_dataset,
@@ -654,7 +648,7 @@ class StructureJsonData(Dataset):
                 data=test_data,
                 graph_converter=self.graph_converter,
                 targets=self.targets,
-                energy_str=self.energy_str,
+                energy_key=self.energy_key,
             )
             test_loader = DataLoader(
                 test_dataset,
@@ -669,7 +663,7 @@ class StructureJsonData(Dataset):
 
 
 def collate_graphs(batch_data: list):
-    """Collate of list of (graph, target) into batch data,.
+    """Collate of list of (graph, target) into batch data.
 
     Args:
         batch_data (list): list of (graph, target(dict))
@@ -682,14 +676,17 @@ def collate_graphs(batch_data: list):
             s (Tensor): stresses of the structures [3*batch_size, 3]
             m (Tensor): magmom of the structures [n_batch_atoms]
     """
-    graphs = []
+    graphs = [graph for graph, _ in batch_data]
     all_targets = {key: [] for key in batch_data[0][1]}
-    for graph, targets in batch_data:
-        graphs.append(graph)
+    all_targets["e"] = torch.tensor(
+        [targets["e"] for _, targets in batch_data], dtype=datatype
+    )
+
+    for _, targets in batch_data:
         for target, value in targets.items():
-            all_targets[target].append(value)
-    if "e" in all_targets:
-        all_targets["e"] = torch.tensor(all_targets["e"], dtype=datatype)
+            if target != "e":
+                all_targets[target].append(value)
+
     return graphs, all_targets
 
 

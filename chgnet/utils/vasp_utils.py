@@ -10,24 +10,24 @@ if TYPE_CHECKING:
     from pymatgen.core import Structure
 
 
-def parse_vasp_dir(file_root):
+def parse_vasp_dir(file_root: str) -> dict[str, list]:
     """Parse VASP output files into structures and labels
     By default, the magnetization is read from mag_x from VASP,
     plz modify the code if magnetization is for (y) and (z).
 
     Args:
-        file_root: the directory of the VASP calculation outputs
+        file_root (str): the directory of the VASP calculation outputs
     """
     try:
-        oszicar = Oszicar(file_root + "/OSZICAR")
-        vasprun_orig = Vasprun(file_root + "/vasprun.xml", exception_on_bad_xml=False)
-        outcar_filename = file_root + "/OUTCAR"
+        oszicar = Oszicar(f"{file_root}/OSZICAR")
+        vasprun_orig = Vasprun(f"{file_root}/vasprun.xml", exception_on_bad_xml=False)
+        outcar_filename = f"{file_root}/OUTCAR"
     except Exception:
-        oszicar = Oszicar(file_root + "/OSZICAR.gz")
+        oszicar = Oszicar(f"{file_root}/OSZICAR.gz")
         vasprun_orig = Vasprun(
-            file_root + "/vasprun.xml.gz", exception_on_bad_xml=False
+            f"{file_root}/vasprun.xml.gz", exception_on_bad_xml=False
         )
-        outcar_filename = file_root + "/OUTCAR.gz"
+        outcar_filename = f"{file_root}/OUTCAR.gz"
 
     charge = []
     mag_x = []
@@ -36,7 +36,7 @@ def parse_vasp_dir(file_root):
     header = []
     all_lines = []
 
-    for line in reverse_readfile(outcar_filename):  # filename : self.filenaem
+    for line in reverse_readfile(outcar_filename):
         clean = line.strip()
         all_lines.append(clean)
 
@@ -60,16 +60,16 @@ def parse_vasp_dir(file_root):
             else:
                 m = re.match(r"\s*(\d+)\s+(([\d\.\-]+)\s+)+", clean)
                 if m:
-                    toks = [float(i) for i in re.findall(r"[\d\.\-]+", clean)]
-                    toks.pop(0)
+                    tokens = [float(token) for token in re.findall(r"[\d\.\-]+", clean)]
+                    tokens.pop(0)
                     if read_charge:
-                        charge.append(dict(zip(header, toks)))
+                        charge.append(dict(zip(header, tokens)))
                     elif read_mag_x:
-                        mag_x.append(dict(zip(header, toks)))
+                        mag_x.append(dict(zip(header, tokens)))
                     elif read_mag_y:
-                        mag_y.append(dict(zip(header, toks)))
+                        mag_y.append(dict(zip(header, tokens)))
                     elif read_mag_z:
-                        mag_z.append(dict(zip(header, toks)))
+                        mag_z.append(dict(zip(header, tokens)))
                 elif clean.startswith("tot"):
                     if ion_step_count == (len(mag_x_all) + 1):
                         mag_x_all.append(mag_x)
@@ -100,24 +100,25 @@ def parse_vasp_dir(file_root):
                 False,
             )
 
-    if len(oszicar.ionic_steps) == len(mag_x_all):  ## unfinished VASP job
+    if len(oszicar.ionic_steps) == len(mag_x_all):  # unfinished VASP job
         print("Unfinished OUTCAR")
-        mag_x_all = mag_x_all
-    elif len(oszicar.ionic_steps) == (len(mag_x_all) - 1):  ## finished job
+    elif len(oszicar.ionic_steps) == (len(mag_x_all) - 1):  # finished job
         mag_x_all.pop(-1)
 
     n_atoms = len(vasprun_orig.ionic_steps[0]["structure"])
     dataset = {
-        "structure": [i["structure"] for i in vasprun_orig.ionic_steps],
-        "uncorrected_total_energy": [i["e_0_energy"] for i in vasprun_orig.ionic_steps],
-        "energy_per_atom": [
-            i["e_0_energy"] / n_atoms for i in vasprun_orig.ionic_steps
+        "structure": [step["structure"] for step in vasprun_orig.ionic_steps],
+        "uncorrected_total_energy": [
+            step["e_0_energy"] for step in vasprun_orig.ionic_steps
         ],
-        "force": [i["forces"] for i in vasprun_orig.ionic_steps],
-        "magmom": [[i["tot"] for i in j] for j in mag_x_all],
+        "energy_per_atom": [
+            step["e_0_energy"] / n_atoms for step in vasprun_orig.ionic_steps
+        ],
+        "force": [step["forces"] for step in vasprun_orig.ionic_steps],
+        "magmom": [[step["tot"] for step in j] for j in mag_x_all],
     }
     if "stress" in vasprun_orig.ionic_steps[0]:
-        dataset["stress"] = [i["stress"] for i in vasprun_orig.ionic_steps]
+        dataset["stress"] = [step["stress"] for step in vasprun_orig.ionic_steps]
     else:
         dataset["stress"] = None
 
@@ -128,23 +129,23 @@ def solve_charge_by_mag(
     structure: Structure,
     default_ox: dict[str, float] | None = None,
     ox_ranges: dict[str, dict[tuple[float, float], int]] | None = None,
-):
+) -> Structure | None:
     """Solve oxidation states by magmom.
 
     Args:
         structure: input pymatgen structure
         default_ox (dict[str, float]): default oxidation state for elements.
-            Default = {"Li": 1, "O": -2}
-        ox_ranges (dict[str, dict[tuple[float, float], int]]): user defined range to
+            Default = dict(Li=1, O=-2)
+        ox_ranges (dict[str, dict[tuple[float, float], int]]): user-defined range to
             convert magmoms into formal valence.
             Example for Mn (Default):
-                {"Mn": {
-                (0.5, 1.5): 2,
-                (1.5, 2.5): 3,
-                (2.5, 3.5): 4,
-                (3.5, 4.2): 3,
-                (4.2, 5): 2
-                }}
+                ("Mn": (
+                    (0.5, 1.5): 2,
+                    (1.5, 2.5): 3,
+                    (2.5, 3.5): 4,
+                    (3.5, 4.2): 3,
+                    (4.2, 5): 2
+                ))
     """
     ox_list = []
     solved_ox = True
@@ -153,18 +154,16 @@ def solve_charge_by_mag(
         "Mn": {(0.5, 1.5): 2, (1.5, 2.5): 3, (2.5, 3.5): 4, (3.5, 4.2): 3, (4.2, 5): 2}
     }
 
-    mag_key = (
-        "final_magmom" if "final_magmom" in structure.site_properties else "magmom"
+    mag = structure.site_properties.get(
+        "final_magmom", structure.site_properties.get("magmom")
     )
 
-    mag = structure.site_properties[mag_key]
-
-    for site_i, site in enumerate(structure.sites):
+    for idx, site in enumerate(structure):
         assigned = False
         if site.species_string in ox_ranges:
-            for (minmag, maxmag), magox in ox_ranges[site.species_string].items():
-                if mag[site_i] >= minmag and mag[site_i] < maxmag:
-                    ox_list.append(magox)
+            for (min_mag, max_mag), mag_ox in ox_ranges[site.species_string].items():
+                if mag[idx] >= min_mag and mag[idx] < max_mag:
+                    ox_list.append(mag_ox)
                     assigned = True
                     break
         elif site.species_string in default_ox:

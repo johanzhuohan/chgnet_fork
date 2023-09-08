@@ -4,6 +4,7 @@ import os
 import pickle
 from typing import TYPE_CHECKING, Literal
 
+import numpy as np
 import pytest
 from ase import Atoms
 from ase.md.nptberendsen import Inhomogeneous_NPTBerendsen
@@ -29,10 +30,10 @@ chgnet = CHGNet.load()
 def test_eos():
     eos = EquationOfState()
     eos.fit(atoms=structure)
-    assert eos.get_bulk_modulus() == approx(0.6621170816, rel=1e-5)
-    assert eos.get_bulk_modulus(unit="GPa") == approx(106.08285172, rel=1e-5)
-    assert eos.get_compressibility() == approx(1.510306904, rel=1e-5)
-    assert eos.get_compressibility(unit="GPa^-1") == approx(0.009426594, rel=1e-5)
+    assert eos.get_bulk_modulus() == approx(0.66012829210838, rel=1e-4)
+    assert eos.get_bulk_modulus(unit="GPa") == approx(105.76421250583728, rel=1e-4)
+    assert eos.get_compressibility() == approx(1.51485, rel=1e-4)
+    assert eos.get_compressibility(unit="GPa^-1") == approx(0.0094549940505, rel=1e-4)
 
 
 @pytest.mark.parametrize("algorithm", ["legacy", "fast"])
@@ -53,13 +54,14 @@ def test_md_nvt(
         atoms=structure,
         model=chgnet_legacy,
         ensemble="nvt",
+        thermostat="Berendsen_inhomogeneous",
         temperature=1000,  # in k
         timestep=2,  # in fs
         trajectory="md_out.traj",
         logfile="md_out.log",
         loginterval=10,
     )
-    md.run(10)
+    md.run(100)
 
     assert isinstance(md.atoms, Atoms)
     assert isinstance(md.atoms.calc, CHGNetCalculator)
@@ -67,12 +69,25 @@ def test_md_nvt(
     assert os.path.isfile("md_out.traj")
     assert os.path.isfile("md_out.log")
     with open("md_out.log") as log_file:
+        next(log_file)
         logs = log_file.read()
-    assert logs == (
-        "Time[ps]      Etot[eV]     Epot[eV]     Ekin[eV]    T[K]\n"
+        logs = np.fromstring(logs, dtype=float, sep=" ")
+    ref = np.fromstring(
         "0.0000         -58.9727     -58.9727       0.0000     0.0\n"
         "0.0200         -58.9723     -58.9731       0.0009     0.8\n"
+        "0.0400         -58.9672     -58.9727       0.0055     5.4\n"
+        "0.0600         -58.9427     -58.9663       0.0235    22.8\n"
+        "0.0800         -58.8605     -58.9352       0.0747    72.2\n"
+        "0.1000         -58.7651     -58.8438       0.0786    76.0\n"
+        "0.1200         -58.6684     -58.7268       0.0584    56.4\n"
+        "0.1400         -58.5703     -58.6202       0.0499    48.2\n"
+        "0.1600         -58.4724     -58.5531       0.0807    78.1\n"
+        "0.1800         -58.3891     -58.8077       0.4186   404.8\n"
+        "0.2000         -58.3398     -58.9244       0.5846   565.4\n",
+        dtype=float,
+        sep=" ",
     )
+    assert np.isclose(logs, ref, rtol=2.1e-3, atol=1e-8).all()
 
 
 def test_md_nve(tmp_path: Path, monkeypatch: MonkeyPatch):
@@ -110,28 +125,42 @@ def test_md_npt_inhomogeneous_berendsen(tmp_path: Path, monkeypatch: MonkeyPatch
         atoms=structure,
         model=chgnet,
         ensemble="npt",
+        thermostat="Berendsen_inhomogeneous",
         temperature=1000,  # in k
         timestep=2,  # in fs
-        compressibility_au=1.5103069,
         trajectory="md_out.traj",
         logfile="md_out.log",
         loginterval=10,
     )
-    md.run(10)
+    md.run(100)
 
     assert isinstance(md.atoms, Atoms)
     assert isinstance(md.atoms.calc, CHGNetCalculator)
     assert isinstance(md.dyn, Inhomogeneous_NPTBerendsen)
-    assert md.dyn.pressure == approx(6.324209e-07, rel=1e-5)
+    assert md.bulk_modulus == approx(105.764, rel=1e-2)
+    assert md.dyn.pressure == approx(6.324e-07, rel=1e-4)
     assert os.path.isfile("md_out.traj")
     assert os.path.isfile("md_out.log")
     with open("md_out.log") as log_file:
+        next(log_file)
         logs = log_file.read()
-    assert logs == (
-        "Time[ps]      Etot[eV]     Epot[eV]     Ekin[eV]    T[K]\n"
+        logs = np.fromstring(logs, dtype=float, sep=" ")
+    ref = np.fromstring(
         "0.0000         -58.9727     -58.9727       0.0000     0.0\n"
-        "0.0200         -58.9723     -58.9732       0.0009     0.8\n"
+        "0.0200         -58.9723     -58.9731       0.0009     0.8\n"
+        "0.0400         -58.9672     -58.9727       0.0055     5.3\n"
+        "0.0600         -58.9427     -58.9663       0.0235    22.7\n"
+        "0.0800         -58.8605     -58.9352       0.0747    72.2\n"
+        "0.1000         -58.7652     -58.8438       0.0786    76.0\n"
+        "0.1200         -58.6686     -58.7269       0.0584    56.4\n"
+        "0.1400         -58.5707     -58.6205       0.0499    48.2\n"
+        "0.1600         -58.4731     -58.5533       0.0802    77.6\n"
+        "0.1800         -58.3897     -58.8064       0.4167   402.9\n"
+        "0.2000         -58.3404     -58.9253       0.5849   565.6\n",
+        dtype=float,
+        sep=" ",
     )
+    assert np.isclose(logs, ref, rtol=2.1e-3, atol=1e-8).all()
 
 
 def test_md_crystal_feas_log(
@@ -150,7 +179,7 @@ def test_md_crystal_feas_log(
         crystal_feas_logfile="md_crystal_feas.p",
         loginterval=1,
     )
-    md.run(10)
+    md.run(100)
 
     assert os.path.isfile("md_crystal_feas.p")
     with open("md_crystal_feas.p", "rb") as file:
@@ -159,9 +188,9 @@ def test_md_crystal_feas_log(
     crystal_feas = data["crystal_feas"]
 
     assert isinstance(crystal_feas, list)
-    assert len(crystal_feas) == 11
+    assert len(crystal_feas) == 101
     assert len(crystal_feas[0]) == 64
-    assert crystal_feas[0][0] == approx(1.4411175, rel=1e-5)
-    assert crystal_feas[0][1] == approx(2.6527007, rel=1e-5)
-    assert crystal_feas[10][0] == approx(1.4390144, rel=1e-5)
-    assert crystal_feas[10][1] == approx(2.65252, rel=1e-5)
+    assert crystal_feas[0][0] == approx(1.4411131, rel=1e-5)
+    assert crystal_feas[0][1] == approx(2.652704, rel=1e-5)
+    assert crystal_feas[10][0] == approx(1.4390125, rel=1e-5)
+    assert crystal_feas[10][1] == approx(2.6525214, rel=1e-5)

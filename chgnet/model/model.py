@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import math
 import os
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal, Sequence
+from typing import TYPE_CHECKING, Literal
 
 import torch
 from pymatgen.core import Structure
@@ -200,6 +201,7 @@ class CHGNet(nn.Module):
         # Define convolutional layers
         conv_norm = kwargs.pop("conv_norm", None)
         gMLP_norm = kwargs.pop("gMLP_norm", None)
+        mlp_out_bias = kwargs.pop("mlp_out_bias", False)
         atom_graph_layers = [
             AtomConv(
                 atom_fea_dim=atom_fea_dim,
@@ -210,6 +212,7 @@ class CHGNet(nn.Module):
                 norm=conv_norm,
                 gMLP_norm=gMLP_norm,
                 use_mlp_out=True,
+                mlp_out_bias=mlp_out_bias,
                 resnet=True,
             )
             for _ in range(n_conv)
@@ -228,6 +231,7 @@ class CHGNet(nn.Module):
                     norm=conv_norm,
                     gMLP_norm=gMLP_norm,
                     use_mlp_out=True,
+                    mlp_out_bias=mlp_out_bias,
                     resnet=True,
                 )
                 for _ in range(n_conv - 1)
@@ -291,6 +295,7 @@ class CHGNet(nn.Module):
                     hidden_dim=mlp_hidden_dims,
                     output_dim=mlp_hidden_dims[-1],
                     dropout=mlp_dropout,
+                    norm=gMLP_norm,
                     activation=non_linearity,
                 ),
                 nn.Linear(in_features=mlp_hidden_dims[-1], out_features=1),
@@ -305,6 +310,7 @@ class CHGNet(nn.Module):
         self,
         graphs: Sequence[CrystalGraph],
         task: PredTask = "e",
+        return_site_energies: bool = False,
         return_atom_feas: bool = False,
         return_crystal_feas: bool = False,
     ) -> dict:
@@ -314,10 +320,13 @@ class CHGNet(nn.Module):
             task (str): the prediction task
                         eg: 'e', 'em', 'ef', 'efs', 'efsm'
                 Default = 'e'
-            return_atom_feas (bool): whether to return the atom features before last
-                conv layer
+            return_site_energies (bool): whether to return per-site energies,
+                only available if self.mlp_first == True
                 Default = False
-            return_crystal_feas (bool): whether to return crystal feature
+            return_atom_feas (bool): whether to return the atom features before last
+                conv layer.
+                Default = False
+            return_crystal_feas (bool): whether to return crystal feature.
                 Default = False
         Returns:
             model output (dict).
@@ -338,21 +347,28 @@ class CHGNet(nn.Module):
         # Pass to model
         prediction = self._compute(
             batched_graph,
-            site_wise="m" in task,
             compute_force="f" in task,
             compute_stress="s" in task,
+            compute_magmom="m" in task,
+            return_site_energies=return_site_energies,
             return_atom_feas=return_atom_feas,
             return_crystal_feas=return_crystal_feas,
         )
         prediction["e"] += comp_energy
+        if return_site_energies and self.composition_model is not None:
+            site_energy_shifts = self.composition_model.get_site_energies(graphs)
+            prediction["site_energies"] = [
+                i + j for i, j in zip(prediction["site_energies"], site_energy_shifts)
+            ]
         return prediction
 
     def _compute(
         self,
         g,
-        site_wise: bool = False,
         compute_force: bool = False,
         compute_stress: bool = False,
+        compute_magmom: bool = False,
+        return_site_energies: bool = False,
         return_atom_feas: bool = False,
         return_crystal_feas: bool = False,
     ) -> dict:
@@ -362,16 +378,18 @@ class CHGNet(nn.Module):
 
         Args:
             g (BatchedGraph): batched graph
-            site_wise (bool): whether to compute magmom.
-                Default = False
             compute_force (bool): whether to compute force.
                 Default = False
             compute_stress (bool): whether to compute stress.
                 Default = False
-            return_atom_feas (bool): whether to return atom features
+            compute_magmom (bool): whether to compute magmom.
                 Default = False
-            return_crystal_feas (bool): whether to return crystal features,
-                only available if self.mlp_first is False
+            return_site_energies (bool): whether to return per-site energies,
+                only available if self.mlp_first == True
+                Default = False
+            return_atom_feas (bool): whether to return atom features.
+                Default = False
+            return_crystal_feas (bool): whether to return crystal features.
                 Default = False
 
         Returns:
@@ -432,7 +450,7 @@ class CHGNet(nn.Module):
                         atom_feas, atoms_per_graph.tolist()
                     )
                 # Compute site-wise magnetic moments
-                if site_wise:
+                if compute_magmom:
                     magmom = torch.abs(self.site_wise(atom_feas))
                     prediction["m"] = list(
                         torch.split(magmom.view(-1), atoms_per_graph.tolist())
@@ -453,6 +471,10 @@ class CHGNet(nn.Module):
         if self.mlp_first:
             energies = self.mlp(atom_feas)
             energy = self.pooling(energies, g.atom_owners).view(-1)
+            if return_site_energies:
+                prediction["site_energies"] = torch.split(
+                    energies.squeeze(1), atoms_per_graph.tolist()
+                )
             if return_crystal_feas:
                 prediction["crystal_fea"] = self.pooling(atom_feas, g.atom_owners)
         else:  # ave or attn to create crystal_fea first
@@ -492,6 +514,7 @@ class CHGNet(nn.Module):
         self,
         structure: Structure | Sequence[Structure],
         task: PredTask = "efsm",
+        return_site_energies: bool = False,
         return_atom_feas: bool = False,
         return_crystal_feas: bool = False,
         batch_size: int = 16,
@@ -503,6 +526,8 @@ class CHGNet(nn.Module):
                 to predict.
             task (str): can be 'e' 'ef', 'em', 'efs', 'efsm'
                 Default = "efsm"
+            return_site_energies (bool): whether to return per-site energies.
+                Default = False
             return_atom_feas (bool): whether to return atom features.
                 Default = False
             return_crystal_feas (bool): whether to return crystal features.
@@ -526,6 +551,7 @@ class CHGNet(nn.Module):
         return self.predict_graph(
             graphs,
             task=task,
+            return_site_energies=return_site_energies,
             return_atom_feas=return_atom_feas,
             return_crystal_feas=return_crystal_feas,
             batch_size=batch_size,
@@ -535,6 +561,7 @@ class CHGNet(nn.Module):
         self,
         graph: CrystalGraph | Sequence[CrystalGraph],
         task: PredTask = "efsm",
+        return_site_energies: bool = False,
         return_atom_feas: bool = False,
         return_crystal_feas: bool = False,
         batch_size: int = 16,
@@ -545,6 +572,8 @@ class CHGNet(nn.Module):
             graph (CrystalGraph | Sequence[CrystalGraph]): CrystalGraph(s) to predict.
             task (str): can be 'e' 'ef', 'em', 'efs', 'efsm'
                 Default = "efsm"
+            return_site_energies (bool): whether to return per-site energies.
+                Default = False
             return_atom_feas (bool): whether to return atom features.
                 Default = False
             return_crystal_feas (bool): whether to return crystal features.
@@ -577,10 +606,19 @@ class CHGNet(nn.Module):
                     for g in graphs[batch_size * step : batch_size * (step + 1)]
                 ],
                 task=task,
+                return_site_energies=return_site_energies,
                 return_atom_feas=return_atom_feas,
                 return_crystal_feas=return_crystal_feas,
             )
-            for key in {"e", "f", "s", "m", "atom_fea", "crystal_fea"} & {*prediction}:
+            for key in {
+                "e",
+                "f",
+                "s",
+                "m",
+                "site_energies",
+                "atom_fea",
+                "crystal_fea",
+            } & {*prediction}:
                 for idx, tensor in enumerate(prediction[key]):
                     predictions[step * batch_size + idx][key] = (
                         tensor.cpu().detach().numpy()
@@ -601,8 +639,8 @@ class CHGNet(nn.Module):
     @classmethod
     def from_dict(cls, dict, **kwargs):
         """Build a CHGNet from a saved dictionary."""
-        chgnet = CHGNet(**dict["model_args"])
-        chgnet.load_state_dict(dict["state_dict"], **kwargs)
+        chgnet = CHGNet(**dict["model_args"], **kwargs)
+        chgnet.load_state_dict(dict["state_dict"])
         return chgnet
 
     @classmethod
@@ -617,7 +655,8 @@ class CHGNet(nn.Module):
         current_dir = os.path.dirname(os.path.abspath(__file__))
         if model_name == "MPtrj-efsm":
             return cls.from_file(
-                os.path.join(current_dir, "../pretrained/e30f77s348m32.pth.tar")
+                os.path.join(current_dir, "../pretrained/e30f77s348m32.pth.tar"),
+                mlp_out_bias=True,
             )
         raise ValueError(f"Unknown {model_name=}")
 
@@ -706,7 +745,7 @@ class BatchedGraph:
             else:
                 strain = None
                 lattice = graph.lattice
-            volumes.append(torch.det(lattice))
+            volumes.append(torch.dot(lattice[0], torch.cross(lattice[1], lattice[2])))
             strains.append(strain)
 
             # Bonds
@@ -763,7 +802,7 @@ class BatchedGraph:
         else:  # when bond graph is empty or disabled
             batched_bond_graph = torch.tensor([])
         atom_owners = (
-            torch.cat(atom_owners, dim=0).type(torch.int).to(atomic_numbers.device)
+            torch.cat(atom_owners, dim=0).type(torch.int32).to(atomic_numbers.device)
         )
         directed2undirected = torch.cat(directed2undirected, dim=0)
         volumes = torch.tensor(volumes, dtype=datatype, device=atomic_numbers.device)
